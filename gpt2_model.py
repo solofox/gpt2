@@ -39,11 +39,12 @@ class LMHead():
         return x
 
 class DecoderLayer():
-    def __init__(self, d_model, h, layernorm_eps: 1e-05):
+    def __init__(self, d_model, h, max_seq_len, layernorm_eps: 1e-05):
         self.d_model = d_model
         self.h = h
         #self.scale = torch.sqrt(d_model / h)
         self.layernorm_eps = layernorm_eps
+        self.max_seq_len = max_seq_len
 
     def load_state_dict(self, state_dict):
         # h.0.attn.c_attn.weight
@@ -82,14 +83,14 @@ class DecoderLayer():
         qkv_splited = torch.split(qkv_merged, self.d_model // self.h, dim=-1)
         assert len(qkv_splited) == 3 * self.h
 
-        q_splited = qkv_splited[0 : self.h]
+        q_splited = qkv_splited[ : self.h]
         k_splited = qkv_splited[self.h : 2 * self.h]
         v_splited = qkv_splited[2 * self.h : ]
 
         scale = math.sqrt(self.d_model / self.h)
         # attention
-        attn_bias = torch.zeros(self.d_model, self.d_model, dtype=x.dtype)
-        attn_mask = torch.ones(self.d_model, self.d_model, dtype=torch.bool).tril(diagonal=0)
+        attn_bias = torch.zeros(self.max_seq_len, self.max_seq_len, dtype=x.dtype)
+        attn_mask = torch.ones(self.max_seq_len, self.max_seq_len, dtype=torch.bool).tril(diagonal=0)
         attn_bias = attn_bias.masked_fill_(attn_mask.logical_not(), float("-inf"))
 
         # 这里的优化空间需要分析，for里面的内容尽量少
@@ -133,7 +134,7 @@ class Chatgpt2Model():
         self.decoders = []
         for _ in range(self.N):
             self.decoders.append(
-                DecoderLayer(self.d_model, self.h, layernorm_eps=self.layernorm_eps)
+                DecoderLayer(self.d_model, self.h, self.context_window, layernorm_eps=self.layernorm_eps)
             )
         self.lm_head = LMHead(self.d_model, self.vocab_size)
         self.embed = Embed(self.d_model, self.vocab_size)
