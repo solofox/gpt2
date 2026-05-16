@@ -5,6 +5,9 @@ import torch.nn.functional as F
 
 from typing import Tuple
 
+def gelu_new(input: torch.Tensor) -> torch.Tensor:
+    return 0.5 * input * (1.0 + torch.tanh(math.sqrt(2.0 / math.pi) * (input + 0.044715 * torch.pow(input, 3.0))))
+
 class Embed():
     def __init__(self, d_model, vocab_size):
         self.d_model = d_model
@@ -88,17 +91,18 @@ class DecoderLayer():
             headi = torch.matmul(qk_similarities, v_splited[i])
             heads.append(headi)
         y = torch.concat(heads, dim=-1)
-
         y = torch.matmul(x, self.attn_proj_weight) + self.attn_proj_bias
 
+        # residual connection
         x = x + y
         x = F.layer_norm(x, normalized_shape=(self.d_model,), weight=self.ln_1_weight, bias=self.ln_1_bias, eps=self.layernorm_eps)
 
         # FFN
         y = torch.matmul(x, self.c_fc_weight) + self.c_fc_bias
-        y = F.gelu(y)
+        y = gelu_new(y)
         y = torch.matmul(y, self.c_proj_weight) + self.c_proj_bias
 
+        # residual connection
         x = x + y
         x = F.layer_norm(x, normalized_shape=(self.d_model,), weight=self.ln_2_weight, bias=self.ln_2_bias, eps=self.layernorm_eps)
 
