@@ -68,8 +68,8 @@ class DecoderLayer():
         self.c_proj_weight = state_dict.pop('mlp.c_proj.weight')
         self.c_proj_bias = state_dict.pop('mlp.c_proj.bias')
 
-        # 剩下一个 attn.bias 是啥？
-        self.attn_mask_bias = state_dict.pop('attn.bias')
+        # 剩下一个 attn.bias 没啥用
+        attn_mask_bias = state_dict.pop('attn.bias')
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         seq_len = x.shape[-2]
@@ -88,14 +88,15 @@ class DecoderLayer():
 
         scale = math.sqrt(self.d_model / self.h)
         # attention
-        attn_bias = torch.zeros(self.d_model // self.h, self.d_model // self.h, dtype=x.dtype)
-        attn_mask = torch.ones(self.d_model // self.h, self.d_model // self.h, dtype=torch.bool).tril(diagonal=0)
+        attn_bias = torch.zeros(self.d_model, self.d_model, dtype=x.dtype)
+        attn_mask = torch.ones(self.d_model, self.d_model, dtype=torch.bool).tril(diagonal=0)
         attn_bias = attn_bias.masked_fill_(attn_mask.logical_not(), float("-inf"))
 
+        # 这里的优化空间需要分析，for里面的内容尽量少
         heads = []
         for i in range(self.h):
             qk_similarities = torch.matmul(q_splited[i], k_splited[i].transpose(-2, -1)) / scale
-            qk_similarities += self.attn_mask_bias[0, 0, :seq_len, :seq_len]
+            qk_similarities += attn_bias[:seq_len, :seq_len]
             qk_similarities = F.softmax(qk_similarities, dim=-1)
             headi = torch.matmul(qk_similarities, v_splited[i])
             heads.append(headi)
