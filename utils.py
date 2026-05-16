@@ -38,7 +38,7 @@ def _load_tensor(fp, tensor_name: str, dtype_name: str, data_offsets: Tuple[int,
     buffer = fp.read(buffer_len)
     if len(buffer) != buffer_len:
         raise Exception(f"Tensor {tensor_name}: data is too short in file, is it truncated?")
-    tensor = torch.frombuffer(buffer, dtype=dtype).reshape(shape)
+    tensor = torch.frombuffer(bytearray(buffer), dtype=dtype).reshape(shape)
     return tensor
     
 def load_safetensors(path: PathLike):
