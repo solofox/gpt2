@@ -73,6 +73,9 @@ class DecoderLayer():
         print("Dropping paramter h.*.attn.bias")
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        residual = x
+
+        x = F.layer_norm(x, normalized_shape=(self.d_model,), weight=self.ln_1_weight, bias=self.ln_1_bias, eps=self.layernorm_eps)
         qkv_merged = torch.matmul(x, self.attn_weight) + self.attn_bias
         qkv_splited = torch.split(qkv_merged, self.d_model // self.h, dim=-1)
         assert len(qkv_splited) == 3 * self.h
@@ -90,21 +93,23 @@ class DecoderLayer():
             qk_similarities = F.softmax(qk_similarities, dim=-1)
             headi = torch.matmul(qk_similarities, v_splited[i])
             heads.append(headi)
-        y = torch.concat(heads, dim=-1)
-        y = torch.matmul(x, self.attn_proj_weight) + self.attn_proj_bias
+        x = torch.concat(heads, dim=-1)
+        x = torch.matmul(x, self.attn_proj_weight) + self.attn_proj_bias
 
         # residual connection
-        x = x + y
-        x = F.layer_norm(x, normalized_shape=(self.d_model,), weight=self.ln_1_weight, bias=self.ln_1_bias, eps=self.layernorm_eps)
+        x = x + residual
+
+        residual = x
+        
+        x = F.layer_norm(x, normalized_shape=(self.d_model,), weight=self.ln_2_weight, bias=self.ln_2_bias, eps=self.layernorm_eps)
 
         # FFN
-        y = torch.matmul(x, self.c_fc_weight) + self.c_fc_bias
-        y = gelu_new(y)
-        y = torch.matmul(y, self.c_proj_weight) + self.c_proj_bias
+        x = torch.matmul(x, self.c_fc_weight) + self.c_fc_bias
+        x = gelu_new(x)
+        x = torch.matmul(x, self.c_proj_weight) + self.c_proj_bias
 
         # residual connection
-        x = x + y
-        x = F.layer_norm(x, normalized_shape=(self.d_model,), weight=self.ln_2_weight, bias=self.ln_2_bias, eps=self.layernorm_eps)
+        x = x + residual
 
         return x
 
