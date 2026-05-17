@@ -72,11 +72,8 @@ class DecoderLayer():
         # 剩下一个 attn.bias 没啥用
         attn_mask_bias = state_dict.pop('attn.bias')
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def attention(self, x: torch.Tensor) -> torch.Tensor:
         seq_len = x.shape[-2]
-
-        residual = x
-
         # ATTENTION
         x = F.layer_norm(x, normalized_shape=(self.d_model,), weight=self.ln_1_weight, bias=self.ln_1_bias, eps=self.layernorm_eps)
         qkv_merged = torch.matmul(x, self.attn_weight) + self.attn_bias
@@ -87,7 +84,7 @@ class DecoderLayer():
         k_splited = qkv_splited[self.h : 2 * self.h]
         v_splited = qkv_splited[2 * self.h : ]
 
-        scale = math.sqrt(self.d_model / self.h)
+        scale = torch.rsqrt(torch.tensor([self.d_model / self.h], dtype=x.dtype))
         # attention
         attn_bias = torch.zeros(self.max_seq_len, self.max_seq_len, dtype=x.dtype)
         attn_mask = torch.ones(self.max_seq_len, self.max_seq_len, dtype=torch.bool).tril(diagonal=0)
@@ -96,28 +93,32 @@ class DecoderLayer():
         # 这里的优化空间需要分析，for里面的内容尽量少
         heads = []
         for i in range(self.h):
-            qk_similarities = torch.matmul(q_splited[i], k_splited[i].transpose(-2, -1)) / scale
+            qk_similarities = torch.matmul(q_splited[i], k_splited[i].transpose(-2, -1)) * scale
             qk_similarities += attn_bias[:seq_len, :seq_len]
             qk_similarities = F.softmax(qk_similarities, dim=-1)
             headi = torch.matmul(qk_similarities, v_splited[i])
             heads.append(headi)
         x = torch.concat(heads, dim=-1)
         x = torch.matmul(x, self.attn_proj_weight) + self.attn_proj_bias
+        return x
 
-        # residual connection
-        x = x + residual
-
-        residual = x
-
+    def mlp(self, x: torch.Tensor) -> torch.Tensor:
         # MLP
         x = F.layer_norm(x, normalized_shape=(self.d_model,), weight=self.ln_2_weight, bias=self.ln_2_bias, eps=self.layernorm_eps)
 
         x = torch.matmul(x, self.c_fc_weight) + self.c_fc_bias
         x = gelu_new(x)
         x = torch.matmul(x, self.c_proj_weight) + self.c_proj_bias
+        return x
+    
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        residual = x
+        a = self.attention(x)
+        x = a + residual
 
-        # residual connection
-        x = x + residual
+        residual = x
+        m = self.mlp(x)
+        x = m + residual
 
         return x
 
