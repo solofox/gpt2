@@ -42,40 +42,33 @@ class DecoderLayer():
     def __init__(self, d_model, h, max_seq_len, layernorm_eps: 1e-05):
         self.d_model = d_model
         self.h = h
-        #self.scale = torch.sqrt(d_model / h)
         self.layernorm_eps = layernorm_eps
         self.max_seq_len = max_seq_len
 
     def load_state_dict(self, state_dict):
-        # h.0.attn.c_attn.weight
-        # h.0.attn.c_attn.bias
-        # h.0.attn.bias           [1,1,1024,1024]
-        # h.0.attn.c_proj.weight
-        # h.0.attn.c_proj.bias
-        self.attn_weight = state_dict.pop('attn.c_attn.weight')
-        self.attn_bias = state_dict.pop('attn.c_attn.bias')
-        self.attn_proj_weight = state_dict.pop('attn.c_proj.weight')
-        self.attn_proj_bias = state_dict.pop('attn.c_proj.bias')
-
         # layer norm
         self.ln_1_weight = state_dict.pop('ln_1.weight')
         self.ln_1_bias = state_dict.pop('ln_1.bias')
         self.ln_2_weight = state_dict.pop('ln_2.weight')
         self.ln_2_bias = state_dict.pop('ln_2.bias')
-
+        # atteion 
+        self.attn_weight = state_dict.pop('attn.c_attn.weight')
+        self.attn_bias = state_dict.pop('attn.c_attn.bias')
+        self.attn_proj_weight = state_dict.pop('attn.c_proj.weight')
+        self.attn_proj_bias = state_dict.pop('attn.c_proj.bias')
         # MLP
         self.c_fc_weight = state_dict.pop('mlp.c_fc.weight')
         self.c_fc_bias = state_dict.pop('mlp.c_fc.bias')
         self.c_proj_weight = state_dict.pop('mlp.c_proj.weight')
         self.c_proj_bias = state_dict.pop('mlp.c_proj.bias')
-
         # 剩下一个 attn.bias 没啥用
         attn_mask_bias = state_dict.pop('attn.bias')
 
     def attention(self, x: torch.Tensor) -> torch.Tensor:
         seq_len = x.shape[-2]
-        # ATTENTION
+
         x = F.layer_norm(x, normalized_shape=(self.d_model,), weight=self.ln_1_weight, bias=self.ln_1_bias, eps=self.layernorm_eps)
+
         qkv_merged = torch.matmul(x, self.attn_weight) + self.attn_bias
         qkv_splited = torch.split(qkv_merged, self.d_model // self.h, dim=-1)
         assert len(qkv_splited) == 3 * self.h
@@ -85,7 +78,7 @@ class DecoderLayer():
         v_splited = qkv_splited[2 * self.h : ]
 
         scale = torch.rsqrt(torch.tensor([self.d_model / self.h], dtype=x.dtype))
-        # attention
+
         attn_bias = torch.zeros(self.max_seq_len, self.max_seq_len, dtype=x.dtype)
         attn_mask = torch.ones(self.max_seq_len, self.max_seq_len, dtype=torch.bool).tril(diagonal=0)
         attn_bias = attn_bias.masked_fill_(attn_mask.logical_not(), float("-inf"))
@@ -141,7 +134,7 @@ class Chatgpt2Model():
         self.embed = Embed(self.d_model, self.vocab_size)
 
     def load_state_dict(self, state_dict):
-        metadata = state_dict.pop('__metadata__')
+        metadata = state_dict.pop('__metadata__', {})
         for layer_no in range(self.N):
             prefix = f"h.{layer_no}."
             sub_state_dict = {
