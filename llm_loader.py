@@ -24,5 +24,6 @@ def load(model_path: PathLike) -> Tuple[Any, Any]:
 
     tokenizer = AutoTokenizer.from_pretrained(model_path)
 
+    print(tokenizer, type(tokenizer))
     return model, tokenizer
 

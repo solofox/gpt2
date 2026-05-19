@@ -67,26 +67,7 @@ def load_safetensors(path: PathLike):
             tensor = _load_tensor(f, key, tensor_info['dtype'], tensor_info['data_offsets'], tensor_info['shape'], 8 + header_len)
             tensor_info['tensor'] = tensor
         return header
-    
-def tensors_compare():
-    import safetensors
-    import pathlib
-    #import pdb; pdb.set_trace()
-    path = pathlib.Path('./models/chatgpt2-small/model.safetensors')
-    mydata = load_safetensors(path)
-    passed = True
-    with safetensors.safe_open(path, framework="pt") as f:
-        for k in f.keys():
-            my = mydata[k]['tensor']
-            other = f.get_tensor(k)
-            diff = my - other
-            sum_diff = torch.sum(diff ** 2).item()
-            avergage_diff =  sum_diff / diff.numel()
-            this_passed = (sum_diff < 1e-3) and (avergage_diff < 1e-9)
-            print(f"comparing {k}: total diff={sum_diff}, average diff={avergage_diff}, passed={this_passed}")
-            passed = passed and this_passed
-    print("PASSED" if passed else "FAILED")
-    return 0 if passed else 1
 
-if __name__ == "__main__":
-    sys.exit(tensors_compare())
+def save_tensors(path: PathLike, metadata=None, **tensors_dict):
+    from safetensors.torch import save_file  
+    return save_file(tensors_dict, path, metadata)
