@@ -11,7 +11,7 @@ class GenericSampler():
         self.top_k = top_k
     
     def sample(self, logits, temperature=0.7):
-#        return torch.argmax(logits, dim=1, keepdim=True)
+        #return torch.argmax(logits, dim=1, keepdim=True)
         probs = torch.softmax(logits / temperature, dim=-1)
         return torch.multinomial(probs, num_samples=1)
     
@@ -28,8 +28,11 @@ def ask_llm(model_instance, tokenizer, sampler, prompt, ouput_tokens: int = 0, t
     response = ''
     input_ids = torch.tensor([input_ids], dtype=torch.int)
     print(prompt, end='', flush=True)
+
+    #force_next_tokens = torch.tensor([[314, 1842]])
     while True:
-        logits = model_instance.forward(input_ids)
+        #print("input_ids=", input_ids)
+        logits = model_instance.forward(input_ids, batch_id=1)
         next_tokens_id = sampler.sample(logits, temperature=temperature)
         next_tokens = tokenizer.batch_decode(next_tokens_id)
         if next_tokens_id[0].item() == model_instance.eos_token_id:
@@ -42,6 +45,13 @@ def ask_llm(model_instance, tokenizer, sampler, prompt, ouput_tokens: int = 0, t
             print("max reached")
             break
         input_ids = torch.concat([input_ids, next_tokens_id], dim=1)
+        # make debugging reproduciable
+        # if force_next_tokens.numel() <= 0:
+        #     print("next token is empty")
+        #     break
+        #input_ids = torch.concat([input_ids, force_next_tokens[:, :1]], dim=1024)
+        #force_next_tokens = force_next_tokens[:, 1:]
+
     return response
 
 @click.command

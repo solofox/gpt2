@@ -3,6 +3,7 @@ import json
 from transformers import AutoTokenizer
 
 import gpt2_model
+import llama_model
 import utils
 
 from typing import Tuple, Any
@@ -14,16 +15,36 @@ def load(model_path: PathLike) -> Tuple[Any, Any]:
 
     model_type = model_config.get('model_type', 'unknown')
     if model_type == 'gpt2':
-        model = gpt2_model.Chatgpt2Model(model_config)
+        model = gpt2_model.Chatgpt2ModelWithKVCache(model_config)
+    elif model_type == 'llama':
+        model = llama_model.load(model_config)
     else:
         raise Exception(f"Unknown supported model for type {model_type}")
 
     # load parameters
-    parameters = utils.load_safetensors(model_path / 'model.safetensors')
-    model.load_state_dict(parameters)
+    tensors_indexjson_file = model_path / 'model.safetensors.index.json'
+    model_safetensors_file = model_path / 'model.safetensors'
+    if tensors_indexjson_file.exists() and tensors_indexjson_file.is_file():
+        parameters = {}
+        with open(tensors_indexjson_file, "rt") as f:
+            indexjson = json.loads(f.read())
+            for filename in set(indexjson['weight_map'].values()):
+                partial = utils.load_safetensors(model_path / filename)
+                parameters.update(partial)
+    elif model_safetensors_file.exists() and model_safetensors_file.is_file():
+        parameters = utils.load_safetensors()
+    else:
+        raise Exception("No model parameters files found")
+    
+    # only pass tensor to model.load_state_dict
+    tensorsonly_parameters = {}
+    for key, value in parameters.items():
+        if 'tensor' in value:
+            tensorsonly_parameters[key] = value['tensor']
+    model.load_state_dict(tensorsonly_parameters)
 
     tokenizer = AutoTokenizer.from_pretrained(model_path)
 
-    print(tokenizer, type(tokenizer))
+    #print(tokenizer, type(tokenizer))
     return model, tokenizer
 
