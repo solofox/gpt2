@@ -41,7 +41,7 @@ def _load_tensor(fp, tensor_name: str, dtype_name: str, data_offsets: Tuple[int,
     tensor = torch.frombuffer(bytearray(buffer), dtype=dtype).reshape(shape)
     return tensor
     
-def load_safetensors(path: PathLike):
+def load_safetensors(path: PathLike, keep_meta=False):
     with open(path, "rb") as f:
         assert f.seekable(), "File object is not seekable"
 
@@ -55,8 +55,8 @@ def load_safetensors(path: PathLike):
         if len(header_json) != header_len:
             raise Exception(f"File too short to read header")
         
-        #print(header_json)
         header = json.loads(header_json)
+        tensors = {}
         for key, tensor_info in header.items():
             if key in SAFETENSORS_NOT_TENSOR_KEYS:
                 continue
@@ -65,9 +65,14 @@ def load_safetensors(path: PathLike):
                 or 'shape' not in tensor_info:
                 raise Exception(f"Invalid tensor {key}, not dtype/data_offsets/shape all present: {tensor_info}")
             tensor = _load_tensor(f, key, tensor_info['dtype'], tensor_info['data_offsets'], tensor_info['shape'], 8 + header_len)
-            tensor_info['tensor'] = tensor
-        return header
+            if keep_meta:
+                tensor_info['tensor'] = tensor
+                tensors[key] = tensor_info
+            else:
+                tensors[key] = tensor
+        return tensors
 
 def save_tensors(path: PathLike, metadata=None, **tensors_dict):
-    from safetensors.torch import save_file  
-    return save_file(tensors_dict, path, metadata)
+    pass
+    #from safetensors.torch import save_file  
+    #return save_file(tensors_dict, path, metadata)

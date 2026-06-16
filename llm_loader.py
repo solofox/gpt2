@@ -15,7 +15,7 @@ def load(model_path: PathLike) -> Tuple[Any, Any]:
 
     model_type = model_config.get('model_type', 'unknown')
     if model_type == 'gpt2':
-        model = gpt2_model.Chatgpt2ModelWithKVCache(model_config)
+        model = gpt2_model.Chatgpt2Model(model_config)
     elif model_type == 'llama':
         model = llama_model.load(model_config)
     else:
@@ -32,19 +32,13 @@ def load(model_path: PathLike) -> Tuple[Any, Any]:
                 partial = utils.load_safetensors(model_path / filename)
                 parameters.update(partial)
     elif model_safetensors_file.exists() and model_safetensors_file.is_file():
-        parameters = utils.load_safetensors()
+        parameters = utils.load_safetensors(model_safetensors_file)
     else:
         raise Exception("No model parameters files found")
     
-    # only pass tensor to model.load_state_dict
-    tensorsonly_parameters = {}
-    for key, value in parameters.items():
-        if 'tensor' in value:
-            tensorsonly_parameters[key] = value['tensor']
-    model.load_state_dict(tensorsonly_parameters)
+    model.load_state_dict(parameters)
 
     tokenizer = AutoTokenizer.from_pretrained(model_path)
 
-    #print(tokenizer, type(tokenizer))
     return model, tokenizer
 
