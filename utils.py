@@ -1,6 +1,7 @@
 import os, sys
 from os import PathLike
 import json
+import logging
 import struct
 import torch
 
@@ -22,6 +23,7 @@ SAFETENSORS_DTYPE_MAP = {
     "U8": torch.uint8,
     "BOOL": torch.bool,
 }
+
 def _load_tensor(fp, tensor_name: str, dtype_name: str, data_offsets: Tuple[int, int], shape: List[int], header_size: int) -> torch.Tensor:
     if dtype_name not in SAFETENSORS_DTYPE_MAP:
         raise Exception(f"Tensor {tensor_name}: unknown data type {dtype_name}")
@@ -76,3 +78,23 @@ def save_tensors(path: PathLike, metadata=None, **tensors_dict):
     pass
     #from safetensors.torch import save_file  
     #return save_file(tensors_dict, path, metadata)
+
+def setup_logging(level="INFO"):
+    numeric_level = getattr(logging, level.upper(), None)
+    if not isinstance(numeric_level, int):
+        raise ValueError(f'Invalid log level: {level}')
+
+    logger = logging.getLogger()
+    
+    if not logger.handlers:
+        console_handler = logging.StreamHandler(sys.stdout)
+        console_handler.setLevel(numeric_level)
+        
+        formatter = logging.Formatter(
+            fmt='[%(asctime)s][%(levelname)-8s] %(name)s:%(lineno)d - %(message)s',
+            datefmt='%Y-%m-%d %H:%M:%S'
+        )
+        console_handler.setFormatter(formatter)
+        
+        logger.addHandler(console_handler)
+        logger.setLevel(numeric_level)

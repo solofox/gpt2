@@ -10,6 +10,7 @@ import os
 import pathlib
 import copy
 import json
+import math
 import utils
 
 import llama_model as myllama
@@ -53,6 +54,7 @@ def switch_to_high_resolution_floating_point(params):
             pdict['tensor'] = pdict['tensor'].to(torch.float)
 
 def compare_tensor(title, name, x, y, show_data = False):
+    print(title)
     is_good = True
     if show_data:
         print("x: ", x)
@@ -98,6 +100,62 @@ def test_rms(weight, scale=1):
     mod.load_state_dict({'weight': weight})
     output2 = mod.forward(batch)
     compare_tensor("compare rms_norm", "norm.weight", output1, output2)
+
+def test_rope():
+    HEAD = 8
+    batch = torch.rand((BATCH, HEAD, SEQLEN, HIDDEN_SIZE // HEAD))
+    rope1 = myllama.ComplexRope(HIDDEN_SIZE // HEAD, HEAD, 2 * SEQLEN)
+    rope2 = myllama.InterleavedRope(HIDDEN_SIZE // HEAD, HEAD, 2 * SEQLEN)
+
+    output1 = rope1.forward(batch, offset=0)
+    output2 = rope2.forward(batch, offset=0)
+    compare_tensor("compare rope complex vs interleaved", "offset=0", output1, output2)
+
+    output1 = rope1.forward(batch, offset=7)
+    output2 = rope2.forward(batch, offset=7)
+    compare_tensor("compare rope complex vs interleaved", "offset=13", output1, output2)
+
+def test_rope_attention(rope1_impl: myllama.RopeImpl = myllama.RopeImpl.Complex, rope2_impl: myllama.RopeImpl = myllama.RopeImpl.Halved):
+    HEAD = 8
+    x = torch.rand((BATCH, SEQLEN, HIDDEN_SIZE))
+
+    q_weight = torch.randn((HIDDEN_SIZE, HIDDEN_SIZE))
+    k_weight = torch.randn((HIDDEN_SIZE, HIDDEN_SIZE))
+
+    def select_rope(impl: myllama.RopeImpl):
+        if impl == myllama.RopeImpl.Complex:
+            return myllama.ComplexRope(HIDDEN_SIZE // HEAD, HEAD, 2 * SEQLEN)
+        elif impl == myllama.RopeImpl.Interleaved:
+            return myllama.InterleavedRope(HIDDEN_SIZE // HEAD, HEAD, 2 * SEQLEN)
+        elif impl == myllama.RopeImpl.Halved:
+            return myllama.HalvedRope(HIDDEN_SIZE // HEAD, HEAD, 2 * SEQLEN)
+        else:
+            raise Exception(f"Unsupport rope1 implementaion {impl}")
+
+    rope1 = select_rope(rope1_impl)
+    rope2 = select_rope(rope2_impl)
+
+    q_weight_rope1 = rope1.adjust(q_weight)
+    k_weight_rope1 = rope1.adjust(k_weight)
+    q_weight_rope2 = rope2.adjust(q_weight)
+    k_weight_rope2 = rope2.adjust(k_weight)
+
+    scale = 1.0 / math.sqrt(HIDDEN_SIZE / HEAD)
+    mask = torch.full((SEQLEN, SEQLEN), float('-inf')).triu(diagonal=1)
+    def attention(x, q_weight, k_weight, rope):
+        # split header
+        q0 = F.linear(x, q_weight)
+        k0 = F.linear(x, k_weight)
+        q = F.linear(x, q_weight).reshape(*x.shape[:-1], HEAD, HIDDEN_SIZE // HEAD).transpose(1, 2)
+        k = F.linear(x, k_weight).reshape(*x.shape[:-1], HEAD, HIDDEN_SIZE // HEAD).transpose(1, 2)
+        rq = rope.forward(q)
+        rk = rope.forward(k)
+        scores = rq @ rk.transpose(-1, -2)
+        return F.softmax(scores * scale + mask, dim=-1)
+    
+    result1 = attention(x, q_weight_rope1, k_weight_rope1, rope1)
+    result2 = attention(x, q_weight_rope2, k_weight_rope2, rope2)
+    compare_tensor(f"compare rope {rope1_impl.name} vs {rope2_impl.name}", "attention", result1, result2)
 
 
 def test_transformblock(parameters):
@@ -153,15 +211,19 @@ def test():
     # seed must be the same in all processes
     torch.manual_seed(42)
 
-    parameters = load_model_parameters(MODEL_PATH)
-    if True: 
-        switch_to_high_resolution_floating_point(parameters)
-        print("switch floating point to >= float32")
+    # parameters = load_model_parameters(MODEL_PATH)
+    # if True: 
+    #     switch_to_high_resolution_floating_point(parameters)
+    #     print("switch floating point to >= float32")
     print("Loaded")
 
     #test_embedding(parameters['model.embed_tokens.weight']['tensor'])
     #test_rms(parameters['model.norm.weight']['tensor'])
-    test_transformblock(parameters)
+    #test_rope()
+    #test_rope_attention(myllama.RopeImpl.Complex, myllama.RopeImpl.Interleaved)
+    test_rope_attention(myllama.RopeImpl.Complex)
+    test_rope_attention(myllama.RopeImpl.Interleaved)
+    #test_transformblock(parameters)
 
 if __name__ == "__main__":
     test()

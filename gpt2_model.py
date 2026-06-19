@@ -62,6 +62,9 @@ class DecoderLayer():
         self.layernorm_eps = layernorm_eps
         self.max_seq_len = max_seq_len
 
+        self.identity = torch.nn.Identity()
+        self.casual_bias = torch.full( (max_seq_len, max_seq_len), float("-inf")).triu(1)
+
     def load_state_dict(self, state_dict):
         # layer norm
         self.ln_1_weight = state_dict.pop('ln_1.weight')
@@ -103,9 +106,6 @@ class DecoderLayer():
         qkv_merged = torch.matmul(x, self.attn_weight) + self.attn_bias
 
         scale = torch.rsqrt(torch.tensor([self.d_model / self.h], dtype=x.dtype))
-        attn_mask = torch.ones(seq_len, seq_len, dtype=torch.bool).tril(diagonal=0)
-        attn_bias = torch.zeros(seq_len, seq_len, dtype=x.dtype)
-        attn_bias = attn_bias.masked_fill_(attn_mask.logical_not(), float("-inf"))
 
         # split q, k, v
         q, k, v = qkv_merged.split(self.d_model, dim=-1)
@@ -118,8 +118,9 @@ class DecoderLayer():
 
         scores = torch.matmul(q, k.transpose(-2, -1)) * scale
         # causal mask
-        scores += attn_bias
+        scores += self.casual_bias[:seq_len, :seq_len]
         scores = F.softmax(scores, dim=-1)
+        #scores = self.identity(scores)
         scores = torch.matmul(scores, v)
         # merges back
         x = scores.transpose(-2, -3)

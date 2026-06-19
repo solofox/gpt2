@@ -1,4 +1,5 @@
 from os import PathLike
+import torch
 import json
 from transformers import AutoTokenizer
 
@@ -8,7 +9,15 @@ import utils
 
 from typing import Tuple, Any
 
-def load(model_path: PathLike) -> Tuple[Any, Any]:
+def select_device(device_name: str = "auto") -> torch.device:
+    if device_name == "auto":
+        if torch.cuda.is_available():
+            device_name = "cuda"
+        else:
+            device_name = "cpu"
+    return torch.device(device_name)
+
+def load(model_path: PathLike, device: torch.device) -> Tuple[Any, Any]:
 
     with open(model_path / 'config.json', 'rt') as f:
         model_config = json.loads(f.read())        
@@ -37,6 +46,7 @@ def load(model_path: PathLike) -> Tuple[Any, Any]:
         raise Exception("No model parameters files found")
     
     model.load_state_dict(parameters)
+    model.to(device)
 
     tokenizer = AutoTokenizer.from_pretrained(model_path)
 
