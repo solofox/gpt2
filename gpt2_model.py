@@ -4,11 +4,14 @@ import torch
 import torch.nn.functional as F
 import contextlib
 import threading
+from typing import Optional 
+
+import llm_types
 
 def gelu_new(input: torch.Tensor) -> torch.Tensor:
     return 0.5 * input * (1.0 + torch.tanh(math.sqrt(2.0 / math.pi) * (input + 0.044715 * torch.pow(input, 3.0))))
 
-def layer_norm(input: torch.Tensor, weight: torch.Tensor, bias: torch.Tensor, eps: float = 1e-5):
+def layer_norm(input: torch.Tensor, weight: torch.Tensor, bias: torch.Tensor, eps: float = 1e-5) -> torch.Tensor:
     return F.layer_norm(input, normalized_shape=(input.shape[-1],), weight=weight, bias=bias, eps=eps)
     # var, mean = torch.var_mean(input, dim=-1, keepdim=True, correction=0)
     # d = (input - mean)
@@ -16,7 +19,7 @@ def layer_norm(input: torch.Tensor, weight: torch.Tensor, bias: torch.Tensor, ep
     # return d * n * weight + bias
 
 class Embed():
-    def __init__(self, d_model, vocab_size):
+    def __init__(self, d_model: int, vocab_size: int):
         self.device = None
         self.d_model = d_model
         self.vocab_size = vocab_size
@@ -30,7 +33,7 @@ class Embed():
         self.wte_weight = self.wte_weight.to(device)
         self.wpe_weight = self.wpe_weight.to(device)
 
-    def forward(self, input_ids, offset=0):
+    def forward(self, input_ids: torch.Tensor, offset=0) -> torch.Tensor:
         # x: [batch, seq]
         seq_len = input_ids.shape[-1]
         x = self.wte_weight[input_ids]
@@ -38,7 +41,7 @@ class Embed():
         return x
     
 class LMHead():
-    def __init__(self, d_model, vocab_size):
+    def __init__(self, d_model: int, vocab_size: int):
         self.device = None
         self.d_model = d_model
         self.vocab_size = vocab_size
@@ -49,12 +52,12 @@ class LMHead():
     def to(self, device: torch.device):
         self.weight = self.weight.to(device)
     
-    def forward(self, x):
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = torch.matmul(x, self.weight)
         return x
 
 class DecoderLayer():
-    def __init__(self, layer_id, d_model, h, max_seq_len, layernorm_eps: 1e-05):
+    def __init__(self, layer_id: int, d_model: int, h: int, max_seq_len: int, layernorm_eps: float = 1e-05):
         self.device = None
         self.layer_id = layer_id
         self.d_model = d_model
@@ -120,7 +123,6 @@ class DecoderLayer():
         # causal mask
         scores += self.casual_bias[:seq_len, :seq_len]
         scores = F.softmax(scores, dim=-1)
-        #scores = self.identity(scores)
         scores = torch.matmul(scores, v)
         # merges back
         x = scores.transpose(-2, -3)
@@ -132,7 +134,6 @@ class DecoderLayer():
     def mlp(self, x: torch.Tensor) -> torch.Tensor:
         # MLP
         x = layer_norm(x, weight=self.ln_2_weight, bias=self.ln_2_bias, eps=self.layernorm_eps)
-
         x = torch.matmul(x, self.c_fc_weight) + self.c_fc_bias
         x = gelu_new(x)
         x = torch.matmul(x, self.c_proj_weight) + self.c_proj_bias
@@ -148,7 +149,7 @@ class DecoderLayer():
         return x
 
 class Chatgpt2Model():
-    def __init__(self, config):
+    def __init__(self, config: dict):
         self.device = None
         self.N = config['n_layer']           
         self.d_model = config['n_embd'] 
@@ -200,7 +201,7 @@ class Chatgpt2Model():
         for decoder in self.decoders:
             decoder.to(device)
         
-    def forward(self, input_ids: torch.Tensor, batch_id: None):
+    def forward(self, input_ids: torch.Tensor, batch_id: Optional[int]) -> torch.Tensor:
         # input_ids: [batch, seq]
         x = self.embed.forward(input_ids)
         # x: [batch, seq, d_model]

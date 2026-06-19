@@ -75,9 +75,8 @@ def load_safetensors(path: PathLike, keep_meta=False):
         return tensors
 
 def save_tensors(path: PathLike, metadata=None, **tensors_dict):
-    pass
-    #from safetensors.torch import save_file  
-    #return save_file(tensors_dict, path, metadata)
+    from safetensors.torch import save_file  
+    return save_file(tensors_dict, path, metadata)
 
 def setup_logging(level="INFO"):
     numeric_level = getattr(logging, level.upper(), None)

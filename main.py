@@ -1,19 +1,18 @@
 import sys
 import click
 import torch
-import threading
 import pathlib
 import logging
 import time
-from transformers import TextIteratorStreamer
 import utils
 
+import llm_types
 import samplers
 import llm_loader
 
 in_debug_mode = False
     
-def generate(model_instance, tokenizer, sampler, prompt, output_tokens, streaming=True, truncate_to=-1):
+def generate(model_instance: llm_types.Model, tokenizer: llm_types.Tokenizer, sampler: llm_types.Sampler, prompt: str, output_tokens: int, truncate_to: int=-1):
     input_ids_cpu = tokenizer.encode(prompt)
     
     if truncate_to >= 0 and len(input_ids_cpu) > truncate_to:
@@ -34,52 +33,25 @@ def generate(model_instance, tokenizer, sampler, prompt, output_tokens, streamin
     elif output_tokens > max_output_tokens:
         output_tokens = max_output_tokens
     input_ids = torch.tensor([input_ids_cpu], dtype=torch.int).to(model_instance.device)
-    
-    streamer = TextIteratorStreamer(
-        tokenizer, 
-        skip_special_tokens=True, 
-        timeout=None  # blocking
-    )
 
-    token_generation_time = []
     generated_tokens = 0
-    stopped = False
-    def _generate(input_ids, output_tokens):
-        nonlocal token_generation_time
-        nonlocal generated_tokens
-        while True:
-            begin_time = time.time()
-            logits = model_instance.forward(input_ids, batch_id=1)
-            next_token_ids = sampler.sample(logits)
-            #next_token_ids = torch.tensor([[765]])
-            end_time = time.time()
-            token_generation_time.append(end_time - begin_time)
+    stop_reason = None
+    while True:
+        logits = model_instance.forward(input_ids, batch_id=1)
+        next_token_ids = sampler.sample(logits)
+        next_token_ids_cpu = next_token_ids.to("cpu")
+        if next_token_ids_cpu[0].item() == model_instance.eos_token_id:
+            stop_reason = "finish"
+            break
+        generated_tokens += 1
+        newtext = tokenizer.batch_decode(next_token_ids_cpu)
+        yield newtext[0]
+        if generated_tokens > output_tokens:
+            stop_reason = "length"
+            break
+        input_ids = torch.concat([input_ids, next_token_ids], dim=1)
 
-            next_token_ids_cpu = next_token_ids.to("cpu")
-            streamer.put(next_token_ids_cpu[0])
-            if next_token_ids_cpu[0].item() == model_instance.eos_token_id:
-                break
-            generated_tokens += 1
-            output_tokens -= 1
-            if output_tokens <= 0:
-                break
-            input_ids = torch.concat([input_ids, next_token_ids], dim=1)
-            if stopped:
-                break
-        streamer.end()
-
-    gworker = threading.Thread(target=_generate, args=(input_ids, output_tokens), daemon=True)
-    gworker.start()
-    try:
-        for newtext in streamer:
-            yield newtext
-    except KeyboardInterrupt as e:
-        logging.debug("interrupted by Ctrl-C")
-    finally:
-        stopped = True
-        gworker.join()
-    logging.debug("Per-Token generation time: %s", token_generation_time)
-    return generated_tokens
+    return generated_tokens, stop_reason
 
 @click.command
 @click.argument("model_path")
@@ -113,8 +85,7 @@ def run(model_path: str, prompt: str, output_tokens: int, temperature: float, to
     model_instance, tokenizer = llm_loader.load(path, device)
     sampler = samplers.NucleusSampler(temperature, topk, topp)
 
-    generated_tokens = 0
-    #print(prompt, end='', flush=True)
+    generated_tokens, stop_reason = 0, "unknown"
     begin_time = time.time()
     output_stream = generate(model_instance, tokenizer, sampler, prompt, output_tokens=output_tokens, truncate_to=truncate_to)
     try:
@@ -122,14 +93,14 @@ def run(model_path: str, prompt: str, output_tokens: int, temperature: float, to
             newtext = next(output_stream)
             print(newtext, end='', flush=True)
     except StopIteration as e:
-        generated_tokens = e.value or 0
+        if e.value:
+            generated_tokens, stop_reason = e.value        
     print()
     end_time = time.time()
-    logging.info(f"generated_tokens={generated_tokens}, used time={end_time - begin_time}, TPS={generated_tokens / (end_time - begin_time)}")
+    logging.info(f"generated_tokens={generated_tokens}, stop_reason={stop_reason}, used time={end_time - begin_time}, TPS={generated_tokens / (end_time - begin_time)}")
 
 if __name__ == "__main__":
     torch.set_grad_enabled(False)
-    torch.set_num_threads(1)
     run()
 
 

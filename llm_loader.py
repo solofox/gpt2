@@ -2,12 +2,12 @@ from os import PathLike
 import torch
 import json
 from transformers import AutoTokenizer
+from typing import Tuple, Any
 
+import llm_types
 import gpt2_model
-import llama_model
 import utils
 
-from typing import Tuple, Any
 
 def select_device(device_name: str = "auto") -> torch.device:
     if device_name == "auto":
@@ -17,7 +17,7 @@ def select_device(device_name: str = "auto") -> torch.device:
             device_name = "cpu"
     return torch.device(device_name)
 
-def load(model_path: PathLike, device: torch.device) -> Tuple[Any, Any]:
+def load(model_path: PathLike, device: torch.device) -> Tuple[llm_types.Model, llm_types.Tokenizer]:
 
     with open(model_path / 'config.json', 'rt') as f:
         model_config = json.loads(f.read())        
@@ -25,8 +25,6 @@ def load(model_path: PathLike, device: torch.device) -> Tuple[Any, Any]:
     model_type = model_config.get('model_type', 'unknown')
     if model_type == 'gpt2':
         model = gpt2_model.Chatgpt2Model(model_config)
-    elif model_type == 'llama':
-        model = llama_model.load(model_config)
     else:
         raise Exception(f"Unknown supported model for type {model_type}")
 
