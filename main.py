@@ -44,7 +44,7 @@ def generate(model_instance: llm_types.Model, tokenizer: llm_types.Tokenizer, sa
             stop_reason = "finish"
             break
         generated_tokens += 1
-        newtext = tokenizer.batch_decode(next_token_ids_cpu)
+        newtext = tokenizer.batch_decode(next_token_ids_cpu.tolist())
         yield newtext[0]
         if generated_tokens >= output_tokens:
             stop_reason = "length"
