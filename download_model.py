@@ -1,12 +1,10 @@
 import pathlib
-import time
 import click
-from functools import partial
 from modelscope import snapshot_download
 
 MODELS = ['gpt2-small', 'gpt2-medium', 'gpt2-large', 'gpt2-xl']
 
-FILES = ['config.json', 'tokenizer_config.json', 'README.md', 'tokenizer.json', 'vocab.json', 'merges.txt', '*.safetensors']
+FILES = ['config.json', 'tokenizer_config.json', 'README.md', 'tokenizer.json', 'vocab.json', 'merges.txt', '*.safetensors', '*.safetensors.index.json']
 
 MODELS_INFO = {
     'gpt2-small': {

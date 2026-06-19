@@ -25,7 +25,7 @@ def generate(model_instance: llm_types.Model, tokenizer: llm_types.Tokenizer, sa
 
     if len(input_ids_cpu) > model_instance.context_window:
         logging.error(f"Input is too long, it has {len(input_ids_cpu)} tokens but max context window is {model_instance.context_window}")
-        return 0
+        return 0, "length"
     
     max_output_tokens = model_instance.context_window - len(input_ids_cpu)
     if output_tokens <= 0:
@@ -46,7 +46,7 @@ def generate(model_instance: llm_types.Model, tokenizer: llm_types.Tokenizer, sa
         generated_tokens += 1
         newtext = tokenizer.batch_decode(next_token_ids_cpu)
         yield newtext[0]
-        if generated_tokens > output_tokens:
+        if generated_tokens >= output_tokens:
             stop_reason = "length"
             break
         input_ids = torch.concat([input_ids, next_token_ids], dim=1)
@@ -64,8 +64,8 @@ def generate(model_instance: llm_types.Model, tokenizer: llm_types.Tokenizer, sa
 @click.option("--truncate-to", type=int, help="truncate the prompt to this length, default is -1 (no truncation)", default=-1)
 @click.option("--debug", is_flag=True, default=False)
 def run(model_path: str, prompt: str, output_tokens: int, temperature: float, topk: int, topp: float, device: str, truncate_to: int, debug: bool):
-    global is_debug_mode
-    is_debug_mode = debug
+    global in_debug_mode
+    in_debug_mode = debug
     utils.setup_logging("INFO" if not debug else "DEBUG")
 
     if prompt == "-":

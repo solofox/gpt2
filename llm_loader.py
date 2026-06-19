@@ -26,7 +26,7 @@ def load(model_path: PathLike, device: torch.device) -> Tuple[llm_types.Model, l
     if model_type == 'gpt2':
         model = gpt2_model.Chatgpt2Model(model_config)
     else:
-        raise Exception(f"Unknown supported model for type {model_type}")
+        raise Exception(f"Unsupported model for type {model_type}")
 
     # load parameters
     tensors_indexjson_file = model_path / 'model.safetensors.index.json'

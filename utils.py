@@ -30,7 +30,7 @@ def _load_tensor(fp, tensor_name: str, dtype_name: str, data_offsets: Tuple[int,
     dtype = SAFETENSORS_DTYPE_MAP[dtype_name]
     buffer_len = data_offsets[1] - data_offsets[0]
     if not shape:
-        return torch.Tensor([], dtype=dtype)
+        return torch.empty(0, dtype=dtype)
     total_elements = 1
     for i in shape:
         total_elements *= i

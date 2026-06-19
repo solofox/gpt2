@@ -65,8 +65,7 @@ class DecoderLayer():
         self.layernorm_eps = layernorm_eps
         self.max_seq_len = max_seq_len
 
-        self.identity = torch.nn.Identity()
-        self.casual_bias = torch.full( (max_seq_len, max_seq_len), float("-inf")).triu(1)
+        self.causal_bias = torch.full( (max_seq_len, max_seq_len), float("-inf")).triu(1)
 
     def load_state_dict(self, state_dict):
         # layer norm
@@ -101,6 +100,7 @@ class DecoderLayer():
         self.c_fc_bias = self.c_fc_bias.to(device)
         self.c_proj_weight = self.c_proj_weight.to(device)
         self.c_proj_bias = self.c_proj_bias.to(device)
+        self.causal_bias = self.causal_bias.to(device)
 
     def attention(self, x: torch.Tensor) -> torch.Tensor:
         seq_len = x.shape[-2]
@@ -108,7 +108,7 @@ class DecoderLayer():
         x = layer_norm(x, weight=self.ln_1_weight, bias=self.ln_1_bias, eps=self.layernorm_eps)
         qkv_merged = torch.matmul(x, self.attn_weight) + self.attn_bias
 
-        scale = torch.rsqrt(torch.tensor([self.d_model / self.h], dtype=x.dtype))
+        scale = torch.rsqrt(torch.tensor([self.d_model / self.h], dtype=x.dtype, device=x.device))
 
         # split q, k, v
         q, k, v = qkv_merged.split(self.d_model, dim=-1)
@@ -121,7 +121,7 @@ class DecoderLayer():
 
         scores = torch.matmul(q, k.transpose(-2, -1)) * scale
         # causal mask
-        scores += self.casual_bias[:seq_len, :seq_len]
+        scores += self.causal_bias[:seq_len, :seq_len]
         scores = F.softmax(scores, dim=-1)
         scores = torch.matmul(scores, v)
         # merges back

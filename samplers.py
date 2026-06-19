@@ -44,7 +44,7 @@ class NucleusSampler(Sampler):
             mask = (cumsum - sorted_probs) > self.top_p
             sorted_probs[mask] = 0
             probs.scatter_(dim=1, index=indices, src=sorted_probs)
-            probs = probs / torch.sum(sorted_probs, dim=1, keepdim=True)
+            probs = probs / torch.sum(probs, dim=1, keepdim=True)
 
         return torch.multinomial(probs, num_samples=1)
     
