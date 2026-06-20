@@ -1,6 +1,7 @@
 import os, sys
 from os import PathLike
 import json
+import logging
 import struct
 import torch
 
@@ -22,13 +23,14 @@ SAFETENSORS_DTYPE_MAP = {
     "U8": torch.uint8,
     "BOOL": torch.bool,
 }
+
 def _load_tensor(fp, tensor_name: str, dtype_name: str, data_offsets: Tuple[int, int], shape: List[int], header_size: int) -> torch.Tensor:
     if dtype_name not in SAFETENSORS_DTYPE_MAP:
         raise Exception(f"Tensor {tensor_name}: unknown data type {dtype_name}")
     dtype = SAFETENSORS_DTYPE_MAP[dtype_name]
     buffer_len = data_offsets[1] - data_offsets[0]
     if not shape:
-        return torch.Tensor([], dtype=dtype)
+        return torch.empty(0, dtype=dtype)
     total_elements = 1
     for i in shape:
         total_elements *= i
@@ -41,7 +43,7 @@ def _load_tensor(fp, tensor_name: str, dtype_name: str, data_offsets: Tuple[int,
     tensor = torch.frombuffer(bytearray(buffer), dtype=dtype).reshape(shape)
     return tensor
     
-def load_safetensors(path: PathLike):
+def load_safetensors(path: PathLike, keep_meta=False):
     with open(path, "rb") as f:
         assert f.seekable(), "File object is not seekable"
 
@@ -55,8 +57,8 @@ def load_safetensors(path: PathLike):
         if len(header_json) != header_len:
             raise Exception(f"File too short to read header")
         
-        #print(header_json)
         header = json.loads(header_json)
+        tensors = {}
         for key, tensor_info in header.items():
             if key in SAFETENSORS_NOT_TENSOR_KEYS:
                 continue
@@ -65,9 +67,33 @@ def load_safetensors(path: PathLike):
                 or 'shape' not in tensor_info:
                 raise Exception(f"Invalid tensor {key}, not dtype/data_offsets/shape all present: {tensor_info}")
             tensor = _load_tensor(f, key, tensor_info['dtype'], tensor_info['data_offsets'], tensor_info['shape'], 8 + header_len)
-            tensor_info['tensor'] = tensor
-        return header
+            if keep_meta:
+                tensor_info['tensor'] = tensor
+                tensors[key] = tensor_info
+            else:
+                tensors[key] = tensor
+        return tensors
 
 def save_tensors(path: PathLike, metadata=None, **tensors_dict):
     from safetensors.torch import save_file  
     return save_file(tensors_dict, path, metadata)
+
+def setup_logging(level="INFO"):
+    numeric_level = getattr(logging, level.upper(), None)
+    if not isinstance(numeric_level, int):
+        raise ValueError(f'Invalid log level: {level}')
+
+    logger = logging.getLogger()
+    
+    if not logger.handlers:
+        console_handler = logging.StreamHandler(sys.stdout)
+        console_handler.setLevel(numeric_level)
+        
+        formatter = logging.Formatter(
+            fmt='[%(asctime)s][%(levelname)-8s] %(name)s:%(lineno)d - %(message)s',
+            datefmt='%Y-%m-%d %H:%M:%S'
+        )
+        console_handler.setFormatter(formatter)
+        
+        logger.addHandler(console_handler)
+        logger.setLevel(numeric_level)

@@ -1,25 +1,32 @@
 from os import PathLike
+import torch
 import json
 from transformers import AutoTokenizer
-
-import gpt2_model
-import llama_model
-import utils
-
 from typing import Tuple, Any
 
-def load(model_path: PathLike) -> Tuple[Any, Any]:
+import llm_types
+import gpt2_model
+import utils
+
+
+def select_device(device_name: str = "auto") -> torch.device:
+    if device_name == "auto":
+        if torch.cuda.is_available():
+            device_name = "cuda"
+        else:
+            device_name = "cpu"
+    return torch.device(device_name)
+
+def load(model_path: PathLike, device: torch.device) -> Tuple[llm_types.Model, llm_types.Tokenizer]:
 
     with open(model_path / 'config.json', 'rt') as f:
         model_config = json.loads(f.read())        
 
     model_type = model_config.get('model_type', 'unknown')
     if model_type == 'gpt2':
-        model = gpt2_model.Chatgpt2ModelWithKVCache(model_config)
-    elif model_type == 'llama':
-        model = llama_model.load(model_config)
+        model = gpt2_model.Chatgpt2Model(model_config)
     else:
-        raise Exception(f"Unknown supported model for type {model_type}")
+        raise Exception(f"Unsupported model for type {model_type}")
 
     # load parameters
     tensors_indexjson_file = model_path / 'model.safetensors.index.json'
@@ -32,19 +39,14 @@ def load(model_path: PathLike) -> Tuple[Any, Any]:
                 partial = utils.load_safetensors(model_path / filename)
                 parameters.update(partial)
     elif model_safetensors_file.exists() and model_safetensors_file.is_file():
-        parameters = utils.load_safetensors()
+        parameters = utils.load_safetensors(model_safetensors_file)
     else:
         raise Exception("No model parameters files found")
     
-    # only pass tensor to model.load_state_dict
-    tensorsonly_parameters = {}
-    for key, value in parameters.items():
-        if 'tensor' in value:
-            tensorsonly_parameters[key] = value['tensor']
-    model.load_state_dict(tensorsonly_parameters)
+    model.load_state_dict(parameters)
+    model.to(device)
 
     tokenizer = AutoTokenizer.from_pretrained(model_path)
 
-    #print(tokenizer, type(tokenizer))
     return model, tokenizer
 

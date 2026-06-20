@@ -1,0 +1,6 @@
+torch>=2.0
+transformers>=4.40
+click>=8.0
+safetensors>=0.4
+modelscope>=1.14
+numpy<2
