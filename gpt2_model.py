@@ -57,11 +57,11 @@ class LMHead():
         return x
 
 class DecoderLayer():
-    def __init__(self, layer_id: int, d_model: int, h: int, max_seq_len: int, layernorm_eps: float = 1e-05):
+    def __init__(self, layer_id: int, d_model: int, H: int, max_seq_len: int, layernorm_eps: float = 1e-05):
         self.device = None
         self.layer_id = layer_id
         self.d_model = d_model
-        self.h = h
+        self.H = H
         self.layernorm_eps = layernorm_eps
         self.max_seq_len = max_seq_len
 
@@ -108,15 +108,15 @@ class DecoderLayer():
         x = layer_norm(x, weight=self.ln_1_weight, bias=self.ln_1_bias, eps=self.layernorm_eps)
         qkv_merged = torch.matmul(x, self.attn_weight) + self.attn_bias
 
-        scale = torch.rsqrt(torch.tensor([self.d_model / self.h], dtype=x.dtype, device=x.device))
+        scale = torch.rsqrt(torch.tensor([self.d_model / self.H], dtype=x.dtype, device=x.device))
 
         # split q, k, v
         q, k, v = qkv_merged.split(self.d_model, dim=-1)
-        q = q.reshape((-1, seq_len, self.h, self.d_model // self.h))
+        q = q.reshape((-1, seq_len, self.H, self.d_model // self.H))
         q = q.transpose(-2, -3)
-        k = k.reshape((-1, seq_len, self.h, self.d_model // self.h))
+        k = k.reshape((-1, seq_len, self.H, self.d_model // self.H))
         k = k.transpose(-2, -3)
-        v = v.reshape((-1, seq_len, self.h, self.d_model // self.h))
+        v = v.reshape((-1, seq_len, self.H, self.d_model // self.H))
         v = v.transpose(-2, -3)
 
         scores = torch.matmul(q, k.transpose(-2, -1)) * scale
@@ -151,25 +151,25 @@ class DecoderLayer():
 class Chatgpt2Model():
     def __init__(self, config: dict):
         self.device = None
-        self.N = config['n_layer']           
+        self.L = config['n_layer']           
         self.d_model = config['n_embd'] 
-        self.h = config['n_head']             
+        self.H = config['n_head']             
         self.vocab_size = config['vocab_size']
         self.eos_token_id = config['eos_token_id']
         self.context_window = config['n_ctx']
         self.layernorm_eps = config.get('layer_norm_epsilon', 1e-05)
 
         self.decoders = []
-        for layer_id in range(self.N):
+        for layer_id in range(self.L):
             self.decoders.append(
-                DecoderLayer(layer_id, self.d_model, self.h, self.context_window, layernorm_eps=self.layernorm_eps)
+                DecoderLayer(layer_id, self.d_model, self.H, self.context_window, layernorm_eps=self.layernorm_eps)
             )
         self.lm_head = LMHead(self.d_model, self.vocab_size)
         self.embed = Embed(self.d_model, self.vocab_size)
 
     def load_state_dict(self, state_dict):
         metadata = state_dict.pop('__metadata__', {})
-        for layer_no in range(self.N):
+        for layer_no in range(self.L):
             prefix = f"h.{layer_no}."
             sub_state_dict = {
                 key[len(prefix):]: value
