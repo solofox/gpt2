@@ -4,7 +4,7 @@ import torch
 import torch.nn.functional as F
 import contextlib
 import threading
-from typing import Optional 
+from typing import Optional, Tuple
 
 import llm_types
 
@@ -102,7 +102,7 @@ class DecoderLayer():
         self.c_proj_bias = self.c_proj_bias.to(device)
         self.causal_bias = self.causal_bias.to(device)
 
-    def attention(self, x: torch.Tensor) -> torch.Tensor:
+    def attention(self, x: torch.Tensor, kvcache_entry: Optional[llm_types.KVCacheEntry], use_cache: bool = True) -> torch.Tensor:
         seq_len = x.shape[-2]
 
         x = layer_norm(x, weight=self.ln_1_weight, bias=self.ln_1_bias, eps=self.layernorm_eps)
@@ -119,9 +119,23 @@ class DecoderLayer():
         v = v.reshape((-1, seq_len, self.H, self.d_model // self.H))
         v = v.transpose(-2, -3)
 
+        # k_cache: [B, H, cached_len, d_k]
+        # q: [B, H, T, d_k]
+        if use_cache:
+            cached_len = kvcache_entry.cached_len
+            # write into kv cache
+            kvcache_entry.k_cache[self.layer_id, :, :, cached_len : cached_len + seq_len, :] = k
+            kvcache_entry.v_cache[self.layer_id, :, :, cached_len : cached_len + seq_len, :] = v
+            # get full k/v for current length
+            k = kvcache_entry.k_cache[self.layer_id, :, :, : cached_len + seq_len, :]
+            v = kvcache_entry.v_cache[self.layer_id, :, :, : cached_len + seq_len, :]
+            causal_bias = self.causal_bias[cached_len : cached_len + seq_len, : cached_len + seq_len]
+        else:
+            causal_bias = self.causal_bias[:seq_len, :seq_len]
+
         scores = torch.matmul(q, k.transpose(-2, -1)) * scale
         # causal mask
-        scores += self.causal_bias[:seq_len, :seq_len]
+        scores += causal_bias
         scores = F.softmax(scores, dim=-1)
         scores = torch.matmul(scores, v)
         # merges back
@@ -139,16 +153,16 @@ class DecoderLayer():
         x = torch.matmul(x, self.c_proj_weight) + self.c_proj_bias
         return x
     
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, kvcache_entry: Optional[llm_types.KVCacheEntry], use_cache: bool = True) -> torch.Tensor:
         residual = x
-        a = self.attention(x)
+        a = self.attention(x, kvcache_entry, use_cache)
         x = a + residual
         residual = x
         m = self.mlp(x)
         x = m + residual
         return x
 
-class Chatgpt2Model():
+class Chatgpt2Model(llm_types.Model):
     def __init__(self, config: dict):
         self.device = None
         self.L = config['n_layer']           
@@ -166,7 +180,7 @@ class Chatgpt2Model():
             )
         self.lm_head = LMHead(self.d_model, self.vocab_size)
         self.embed = Embed(self.d_model, self.vocab_size)
-
+    
     def load_state_dict(self, state_dict):
         metadata = state_dict.pop('__metadata__', {})
         for layer_no in range(self.L):
@@ -200,13 +214,24 @@ class Chatgpt2Model():
         self.lm_head.to(device)
         for decoder in self.decoders:
             decoder.to(device)
+
+    def allocate_kvcache_for_batch(self, batch_size: int, seq_len: int) -> torch.Tensor:
+        '''
+        allocate a kvcache tensor for batch.
+        dim0's size must be 2, [0] will be k-cache, [1] will be v-cache
+        '''
+        cache_shape = (2, self.L, batch_size, self.H, seq_len, self.d_model // self.H)
+        cache = torch.zeros(cache_shape, dtype=self.embed.wte_weight.dtype, device=self.device)
+        return cache
         
-    def forward(self, input_ids: torch.Tensor, batch_id: Optional[int]) -> torch.Tensor:
+    def forward(self, input_ids: torch.Tensor, kvcache_entry: Optional[llm_types.KVCacheEntry], use_cache: bool = True) -> torch.Tensor:
+        assert not use_cache or kvcache_entry is not None, "kvcache_entry must be provided when use_cache=True"
+
         # input_ids: [batch, seq]
-        x = self.embed.forward(input_ids)
+        x = self.embed.forward(input_ids, kvcache_entry.cached_len if use_cache else 0)
         # x: [batch, seq, d_model]
         for decoder in self.decoders:
-            x = decoder.forward(x)
+            x = decoder.forward(x, kvcache_entry, use_cache)
         # x: [batch, seq, d_model]
         x = layer_norm(x, weight=self.ln_f_weight, bias=self.ln_f_bias, eps=self.layernorm_eps)
         # the next-token prediction only needs the last item in each sample
@@ -214,5 +239,7 @@ class Chatgpt2Model():
         # x: [batch, d_model]
         logits: torch.Tensor = self.lm_head.forward(x)
         # logits: [batch, vocab_size]
+        if use_cache:
+            kvcache_entry.cached_len += input_ids.size(-1)
         return logits
 

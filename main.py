@@ -7,12 +7,13 @@ import time
 import utils
 
 import llm_types
+import kv_cache
 import samplers
 import llm_loader
 
 in_debug_mode = False
     
-def generate(model_instance: llm_types.Model, tokenizer: llm_types.Tokenizer, sampler: llm_types.Sampler, prompt: str, output_tokens: int, truncate_to: int=-1):
+def generate(model_instance: llm_types.Model, tokenizer: llm_types.Tokenizer, sampler: llm_types.Sampler, prompt: str, output_tokens: int, truncate_to: int=-1, disable_kvcache: bool=False):
     input_ids_cpu = tokenizer.encode(prompt)
     
     if truncate_to >= 0 and len(input_ids_cpu) > truncate_to:
@@ -23,7 +24,7 @@ def generate(model_instance: llm_types.Model, tokenizer: llm_types.Tokenizer, sa
     else:
         logging.debug(f"Prompt has {len(input_ids_cpu)} token")
 
-    if len(input_ids_cpu) > model_instance.context_window:
+    if len(input_ids_cpu) >= model_instance.context_window:
         logging.error(f"Input is too long, it has {len(input_ids_cpu)} tokens but max context window is {model_instance.context_window}")
         return 0, "length"
     
@@ -34,10 +35,15 @@ def generate(model_instance: llm_types.Model, tokenizer: llm_types.Tokenizer, sa
         output_tokens = max_output_tokens
     input_ids = torch.tensor([input_ids_cpu], dtype=torch.int).to(model_instance.device)
 
+    if not disable_kvcache:
+        kvcache_entry = kv_cache.allocate(model_instance, input_ids, output_tokens)
+    else:
+        kvcache_entry = None
+
     generated_tokens = 0
     stop_reason = None
     while True:
-        logits = model_instance.forward(input_ids, batch_id=1)
+        logits = model_instance.forward(input_ids, kvcache_entry=kvcache_entry, use_cache=not disable_kvcache)
         next_token_ids = sampler.sample(logits)
         next_token_ids_cpu = next_token_ids.to("cpu")
         if next_token_ids_cpu[0].item() == model_instance.eos_token_id:
@@ -49,7 +55,10 @@ def generate(model_instance: llm_types.Model, tokenizer: llm_types.Tokenizer, sa
         if generated_tokens >= output_tokens:
             stop_reason = "length"
             break
-        input_ids = torch.concat([input_ids, next_token_ids], dim=1)
+        if disable_kvcache:
+            input_ids = torch.concat([input_ids, next_token_ids], dim=1)
+        else:
+            input_ids = next_token_ids
 
     return generated_tokens, stop_reason
 
@@ -62,8 +71,9 @@ def generate(model_instance: llm_types.Model, tokenizer: llm_types.Tokenizer, sa
 @click.option("--topk", "-k", type=int, help="topk, default is ∞ (all tokens)", default=0)
 @click.option("--topp", "-p", type=float, help="topp, default is 1.0 (all tokens)", default=1.0)
 @click.option("--truncate-to", type=int, help="truncate the prompt to this length, default is -1 (no truncation)", default=-1)
+@click.option("--disable-kvcache", is_flag=True, help="disable kvcache", default=False)
 @click.option("--debug", is_flag=True, default=False)
-def run(model_path: str, prompt: str, output_tokens: int, temperature: float, topk: int, topp: float, device: str, truncate_to: int, debug: bool):
+def run(model_path: str, prompt: str, output_tokens: int, temperature: float, topk: int, topp: float, device: str, truncate_to: int, disable_kvcache: bool, debug: bool):
     global in_debug_mode
     in_debug_mode = debug
     utils.setup_logging("INFO" if not debug else "DEBUG")
@@ -87,7 +97,7 @@ def run(model_path: str, prompt: str, output_tokens: int, temperature: float, to
 
     generated_tokens, stop_reason = 0, "unknown"
     begin_time = time.time()
-    output_stream = generate(model_instance, tokenizer, sampler, prompt, output_tokens=output_tokens, truncate_to=truncate_to)
+    output_stream = generate(model_instance, tokenizer, sampler, prompt, output_tokens=output_tokens, truncate_to=truncate_to, disable_kvcache=disable_kvcache)
     try:
         while True:
             newtext = next(output_stream)
