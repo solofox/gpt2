@@ -8,15 +8,6 @@ import llm_types
 import gpt2_model
 import utils
 
-
-def select_device(device_name: str = "auto") -> torch.device:
-    if device_name == "auto":
-        if torch.cuda.is_available():
-            device_name = "cuda"
-        else:
-            device_name = "cpu"
-    return torch.device(device_name)
-
 def load(model_path: PathLike, device: torch.device) -> Tuple[llm_types.Model, llm_types.Tokenizer]:
 
     with open(model_path / 'config.json', 'rt') as f:

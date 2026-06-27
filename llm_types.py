@@ -20,6 +20,7 @@ class KVCacheEntry:
     # KVCacheEntry is in batch granulity, not request granulity
     # q shape: [B, H, T, d_k]
     # shape: [L, B, H, W, d_k]
+    # in TP: H -> H_local
     k_cache: torch.Tensor
     v_cache: torch.Tensor
     cached_len: int = 0

@@ -1,6 +1,8 @@
 import sys
-import click
+import os
 import torch
+import torch.distributed as dist
+import click
 import pathlib
 import logging
 import time
@@ -10,9 +12,10 @@ import llm_types
 import kv_cache
 import samplers
 import llm_loader
+import world
 
 in_debug_mode = False
-    
+
 def generate(model_instance: llm_types.Model, tokenizer: llm_types.Tokenizer, sampler: llm_types.Sampler, prompt: str, output_tokens: int, truncate_to: int=-1, disable_kvcache: bool=False):
     input_ids_cpu = tokenizer.encode(prompt)
     
@@ -44,7 +47,11 @@ def generate(model_instance: llm_types.Model, tokenizer: llm_types.Tokenizer, sa
     stop_reason = None
     while True:
         logits = model_instance.forward(input_ids, kvcache_entry=kvcache_entry, use_cache=not disable_kvcache)
-        next_token_ids = sampler.sample(logits)
+        if world.RANK == 0:
+            next_token_ids = sampler.sample(logits).to(torch.int)
+        else:
+            next_token_ids = torch.zeros( (1, 1), dtype=torch.int, device=logits.device)
+        world.broadcast(next_token_ids, src=0)
         next_token_ids_cpu = next_token_ids.to("cpu")
         if next_token_ids_cpu[0].item() == model_instance.eos_token_id:
             stop_reason = "finish"
@@ -65,7 +72,8 @@ def generate(model_instance: llm_types.Model, tokenizer: llm_types.Tokenizer, sa
 @click.command
 @click.argument("model_path")
 @click.argument("prompt")
-@click.option("--device", "-d", help="computation device, default is auto (detect cuda -> cpu)", default="auto")
+@click.option("--device", "-d", help="computation device, auto/cpu/cuda, default is auto (prefer cuda > cpu)", default="auto")
+@click.option("--backend", help="distributed backend, auto/gloo/nccl, default is auto", default="auto")
 @click.option("--output_tokens", "-m", type=int, help="max output length, default is 0 (until maximum context window size)", default=0)
 @click.option("--temperature", "-t", type=float, help=f"temperature, default is {samplers.DEFAULT_TEMPERATURE}", default=samplers.DEFAULT_TEMPERATURE)
 @click.option("--topk", "-k", type=int, help="topk, default is ∞ (all tokens)", default=0)
@@ -73,7 +81,7 @@ def generate(model_instance: llm_types.Model, tokenizer: llm_types.Tokenizer, sa
 @click.option("--truncate-to", type=int, help="truncate the prompt to this length, default is -1 (no truncation)", default=-1)
 @click.option("--disable-kvcache", is_flag=True, help="disable kvcache", default=False)
 @click.option("--debug", is_flag=True, default=False)
-def run(model_path: str, prompt: str, output_tokens: int, temperature: float, topk: int, topp: float, device: str, truncate_to: int, disable_kvcache: bool, debug: bool):
+def run(model_path: str, prompt: str, output_tokens: int, temperature: float, topk: int, topp: float, device: str, backend: str, truncate_to: int, disable_kvcache: bool, debug: bool):
     global in_debug_mode
     in_debug_mode = debug
     utils.setup_logging("INFO" if not debug else "DEBUG")
@@ -88,8 +96,9 @@ def run(model_path: str, prompt: str, output_tokens: int, temperature: float, to
             prompt = f.read()
 
     device_name = device
-    device = llm_loader.select_device(device_name)
+    device = world.select_device(device_name)
     logging.info(f"Using device: {device}")
+    world.initialize(device, backend)
 
     path = pathlib.Path(model_path)
     model_instance, tokenizer = llm_loader.load(path, device)
@@ -101,13 +110,15 @@ def run(model_path: str, prompt: str, output_tokens: int, temperature: float, to
     try:
         while True:
             newtext = next(output_stream)
-            print(newtext, end='', flush=True)
+            if world.RANK == 0:
+                print(newtext, end='', flush=True)
     except StopIteration as e:
         if e.value:
             generated_tokens, stop_reason = e.value        
     print()
     end_time = time.time()
-    logging.info(f"generated_tokens={generated_tokens}, stop_reason={stop_reason}, used time={end_time - begin_time}, TPS={generated_tokens / (end_time - begin_time)}")
+    if world.RANK == 0:
+        logging.info(f"generated_tokens={generated_tokens}, stop_reason={stop_reason}, used time={end_time - begin_time}, TPS={generated_tokens / (end_time - begin_time)}")
 
 if __name__ == "__main__":
     torch.set_grad_enabled(False)

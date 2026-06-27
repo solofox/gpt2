@@ -7,6 +7,7 @@ import threading
 from typing import Optional, Tuple
 
 import llm_types
+import world
 
 def gelu_new(input: torch.Tensor) -> torch.Tensor:
     return 0.5 * input * (1.0 + torch.tanh(math.sqrt(2.0 / math.pi) * (input + 0.044715 * torch.pow(input, 3.0))))
@@ -28,6 +29,10 @@ class Embed():
         self.wte_weight = state_dict.pop('wte.weight')
         self.wpe_weight = state_dict.pop('wpe.weight')
 
+        if world.WORLD_SIZE > 1:
+            self.wte_weight = world.tensor_split(self.wte_weight, dim=-1)
+            self.wpe_weight = world.tensor_split(self.wpe_weight, dim=-1)
+
     def to(self, device: torch.device):
         self.device = device
         self.wte_weight = self.wte_weight.to(device)
@@ -38,6 +43,8 @@ class Embed():
         seq_len = input_ids.shape[-1]
         x = self.wte_weight[input_ids]
         x = x + self.wpe_weight[offset : offset + seq_len, :]
+        if world.WORLD_SIZE > 1:
+            x = world.all_gather(x)
         return x
     
 class LMHead():
@@ -49,11 +56,24 @@ class LMHead():
     def load_state_dict(self, state_dict):
         self.weight = state_dict.pop('wte.weight').T
 
+        if world.WORLD_SIZE > 1:
+            self.vocab_padsize = (self.vocab_size + world.WORLD_SIZE - 1) // world.WORLD_SIZE * world.WORLD_SIZE - self.vocab_size
+            if self.vocab_padsize > 0:
+                pad_shape = list(self.weight.shape)
+                pad_shape[-1] = self.vocab_padsize
+                pad_tensor = torch.zeros(*pad_shape, dtype=self.weight.dtype, device=self.weight.device)
+                self.weight = torch.cat([self.weight, pad_tensor], dim=-1)
+            self.weight = world.tensor_split(self.weight, dim=-1)
+
     def to(self, device: torch.device):
         self.weight = self.weight.to(device)
     
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = torch.matmul(x, self.weight)
+        if world.WORLD_SIZE > 1:
+            x = world.all_gather(x, dim=-1)
+            if self.vocab_padsize > 0:
+                x = x.split([self.vocab_size, self.vocab_padsize], dim=-1)[0]
         return x
 
 class DecoderLayer():
@@ -65,6 +85,12 @@ class DecoderLayer():
         self.layernorm_eps = layernorm_eps
         self.max_seq_len = max_seq_len
 
+        if world.WORLD_SIZE > 1:
+            assert self.H % world.WORLD_SIZE == 0
+            assert self.d_model % world.WORLD_SIZE == 0
+            self.H_local = self.H // world.WORLD_SIZE
+        else:
+            self.H_local = self.H
         self.causal_bias = torch.full( (max_seq_len, max_seq_len), float("-inf")).triu(1)
 
     def load_state_dict(self, state_dict):
@@ -85,6 +111,26 @@ class DecoderLayer():
         self.c_proj_bias = state_dict.pop('mlp.c_proj.bias')
         # 剩下一个 attn.bias 没啥用
         attn_mask_bias = state_dict.pop('attn.bias')
+
+        if world.WORLD_SIZE > 1:
+            # Attention
+            attn_q_weight, attn_k_weight, attn_v_weight = self.attn_weight.split(self.d_model, dim=-1)
+            attn_q_weight = world.tensor_split(attn_q_weight, dim=-1)
+            attn_k_weight = world.tensor_split(attn_k_weight, dim=-1)
+            attn_v_weight = world.tensor_split(attn_v_weight, dim=-1)
+            self.attn_weight = torch.cat([attn_q_weight, attn_k_weight, attn_v_weight], dim=-1)
+            attn_q_bias, attn_k_bias, attn_v_bias = self.attn_bias.split(self.d_model, dim=-1)
+            attn_q_bias = world.tensor_split(attn_q_bias, dim=-1)
+            attn_k_bias = world.tensor_split(attn_k_bias, dim=-1)
+            attn_v_bias = world.tensor_split(attn_v_bias, dim=-1)
+            self.attn_bias = torch.cat([attn_q_bias, attn_k_bias, attn_v_bias], dim=-1)
+            self.attn_proj_weight = world.tensor_split(self.attn_proj_weight, dim=-2)
+            self.attn_proj_bias.div_(world.WORLD_SIZE)
+            # MLP
+            self.c_fc_weight = world.tensor_split(self.c_fc_weight, dim=-1)
+            self.c_fc_bias = world.tensor_split(self.c_fc_bias, dim=-1)
+            self.c_proj_weight = world.tensor_split(self.c_proj_weight, dim=-2)
+            self.c_proj_bias.div_(world.WORLD_SIZE)
     
     def to(self, device: torch.device):
         self.device = device
@@ -111,12 +157,12 @@ class DecoderLayer():
         scale = torch.rsqrt(torch.tensor([self.d_model / self.H], dtype=x.dtype, device=x.device))
 
         # split q, k, v
-        q, k, v = qkv_merged.split(self.d_model, dim=-1)
-        q = q.reshape((-1, seq_len, self.H, self.d_model // self.H))
+        q, k, v = qkv_merged.split(self.d_model // self.H * self.H_local, dim=-1)
+        q = q.reshape((-1, seq_len, self.H_local, self.d_model // self.H))
         q = q.transpose(-2, -3)
-        k = k.reshape((-1, seq_len, self.H, self.d_model // self.H))
+        k = k.reshape((-1, seq_len, self.H_local, self.d_model // self.H))
         k = k.transpose(-2, -3)
-        v = v.reshape((-1, seq_len, self.H, self.d_model // self.H))
+        v = v.reshape((-1, seq_len, self.H_local, self.d_model // self.H))
         v = v.transpose(-2, -3)
 
         # k_cache: [B, H, cached_len, d_k]
@@ -140,7 +186,7 @@ class DecoderLayer():
         scores = torch.matmul(scores, v)
         # merges back
         x = scores.transpose(-2, -3)
-        x = x.reshape((-1, seq_len, self.d_model))
+        x = x.reshape((-1, seq_len, self.d_model // self.H * self.H_local))
 
         x = torch.matmul(x, self.attn_proj_weight) + self.attn_proj_bias
         return x
@@ -156,9 +202,13 @@ class DecoderLayer():
     def forward(self, x: torch.Tensor, kvcache_entry: Optional[llm_types.KVCacheEntry], use_cache: bool = True) -> torch.Tensor:
         residual = x
         a = self.attention(x, kvcache_entry, use_cache)
+        if world.WORLD_SIZE > 1:
+            world.all_reduce(a)
         x = a + residual
         residual = x
         m = self.mlp(x)
+        if world.WORLD_SIZE > 1:
+            world.all_reduce(m)
         x = m + residual
         return x
 
@@ -172,6 +222,12 @@ class Chatgpt2Model(llm_types.Model):
         self.eos_token_id = config['eos_token_id']
         self.context_window = config['n_ctx']
         self.layernorm_eps = config.get('layer_norm_epsilon', 1e-05)
+
+        if world.WORLD_SIZE > 1:
+            assert self.H % world.WORLD_SIZE == 0
+            self.H_local = self.H // world.WORLD_SIZE
+        else:
+            self.H_local = self.H
 
         self.decoders = []
         for layer_id in range(self.L):
@@ -220,7 +276,7 @@ class Chatgpt2Model(llm_types.Model):
         allocate a kvcache tensor for batch.
         dim0's size must be 2, [0] will be k-cache, [1] will be v-cache
         '''
-        cache_shape = (2, self.L, batch_size, self.H, seq_len, self.d_model // self.H)
+        cache_shape = (2, self.L, batch_size, self.H_local, seq_len, self.d_model // self.H)
         cache = torch.zeros(cache_shape, dtype=self.embed.wte_weight.dtype, device=self.device)
         return cache
         
